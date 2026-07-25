@@ -1,19 +1,35 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { useAuth } from '../context/AuthContext';
-import { auth, db, GoogleAuthProvider, signInWithCredential } from '../firebase';
-import { signInWithPopup, createUserWithEmailAndPassword, sendEmailVerification } from 'firebase/auth';
+import { auth, db, GoogleAuthProvider } from '../firebase';
+import { 
+  signInWithPopup, 
+  createUserWithEmailAndPassword, 
+  sendEmailVerification, 
+  sendPasswordResetEmail,
+  RecaptchaVerifier,
+  signInWithPhoneNumber
+} from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
-import { Eye, EyeOff, Mail, Lock, User, Briefcase, MapPin, Building, Key, ShieldCheck } from 'lucide-react';
+import { Eye, EyeOff, Mail, Lock, User, Briefcase, MapPin, Building, ShieldCheck, Phone, Smartphone, CheckCircle2 } from 'lucide-react';
 
 export default function Auth({ isLogin = true, view = 'form' }) {
-  const { login, signup, resetPassword } = useAuth();
+  const { login, signup } = useAuth();
   const navigate = useNavigate();
+
+  // State Management
+  const [authMethod, setAuthMethod] = useState('email'); // 'email' | 'phone'
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [firebaseError, setFirebaseError] = useState('');
-  const [otpCode, setOtpCode] = useState(['', '', '', '']);
+  const [firebaseSuccess, setFirebaseSuccess] = useState('');
+  
+  // Phone OTP State
+  const [phoneNumber, setPhoneNumber] = useState('+91 ');
+  const [confirmationResult, setConfirmationResult] = useState(null);
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpCode, setOtpCode] = useState(['', '', '', '', '', '']); // 6-digit Firebase Phone OTP
 
   // React Hook Form
   const { register, handleSubmit, formState: { errors } } = useForm({
@@ -36,30 +52,180 @@ export default function Auth({ isLogin = true, view = 'form' }) {
     "Prosthodontics"
   ];
 
-  // Submit handler for login and signup
+  // Initialize RecaptchaVerifier for Firebase Phone Auth
+  useEffect(() => {
+    if (!window.recaptchaVerifier) {
+      try {
+        window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+          size: 'invisible',
+          callback: () => {
+            console.log('reCAPTCHA verified');
+          },
+          'expired-callback': () => {
+            console.log('reCAPTCHA expired');
+          }
+        });
+      } catch (err) {
+        console.log('Recaptcha init notice:', err.message);
+      }
+    }
+  }, []);
+
+  // 1. Submit handler for Email Login / Signup
   const onSubmit = async (data) => {
     setLoading(true);
     setFirebaseError('');
+    setFirebaseSuccess('');
     try {
       if (isLogin && view === 'form') {
-        // Log in
         await login(data.email, data.password);
         navigate('/');
       } else if (!isLogin && view === 'form') {
-        // Sign up. In production setup, we can trigger OTP verification
-        // For screen sequence, we will redirect to `/otp` page after credentials check, 
-        // passing registration data in state.
-        navigate('/otp', { state: { regData: data } });
+        const creds = await signup(
+          data.name,
+          data.email,
+          data.password,
+          data.specialization,
+          data.institution,
+          data.location
+        );
+
+        // Trigger Real Firebase Email Verification
+        if (auth.currentUser) {
+          await sendEmailVerification(auth.currentUser);
+          setFirebaseSuccess('Account created! A real verification link has been sent to your email inbox.');
+        }
+        
+        setTimeout(() => {
+          navigate('/verify-email');
+        }, 1500);
       }
     } catch (err) {
       console.error(err);
-      setFirebaseError(err.message || 'Authentication failed. Please try again.');
+      setFirebaseError(err.message || 'Authentication failed. Please check your credentials.');
     } finally {
       setLoading(false);
     }
   };
 
-  // Google Sign In
+  // 2. Real Firebase Phone OTP SMS Request
+  const handleSendPhoneOtp = async (e) => {
+    e.preventDefault();
+    if (!phoneNumber || phoneNumber.length < 10) {
+      setFirebaseError('Please enter a valid phone number with country code (e.g. +91 9876543210)');
+      return;
+    }
+
+    setLoading(true);
+    setFirebaseError('');
+    setFirebaseSuccess('');
+
+    try {
+      const appVerifier = window.recaptchaVerifier;
+      const formattedPhone = phoneNumber.replace(/\s+/g, '');
+      const confirmation = await signInWithPhoneNumber(auth, formattedPhone, appVerifier);
+      setConfirmationResult(confirmation);
+      setOtpSent(true);
+      setFirebaseSuccess(`Real SMS OTP code sent to ${formattedPhone}! Check your phone.`);
+    } catch (err) {
+      console.error('Phone OTP error:', err);
+      setFirebaseError(err.message || 'Failed to send SMS OTP to phone number. Please check format.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 3. Verify Real Firebase Phone OTP Code
+  const handleVerifyPhoneOtp = async (e) => {
+    e.preventDefault();
+    const code = otpCode.join('');
+    if (code.length < 6) {
+      setFirebaseError('Please enter the full 6-digit OTP code sent to your phone.');
+      return;
+    }
+
+    setLoading(true);
+    setFirebaseError('');
+    setFirebaseSuccess('');
+
+    try {
+      if (confirmationResult) {
+        const result = await confirmationResult.confirm(code);
+        const user = result.user;
+
+        // Ensure user document exists in Firestore
+        const userDocRef = doc(db, 'users', user.uid);
+        const userDoc = await getDoc(userDocRef);
+
+        if (!userDoc.exists()) {
+          await setDoc(userDocRef, {
+            uid: user.uid,
+            name: 'Dr. Clinician',
+            email: user.email || '',
+            phone: user.phoneNumber || phoneNumber,
+            specialization: 'General Dentistry',
+            institution: '',
+            location: '',
+            role: 'doctor',
+            photoUrl: 'https://images.unsplash.com/photo-1622253692010-333f2da6031d?auto=format&fit=crop&q=80&w=200',
+            bio: 'Dental Professional verified via Mobile OTP',
+            notificationSettings: { likes: true, comments: true, connections: true, chat: true, email: true, push: true },
+            privacySettings: { profileVisibility: 'public', showEmail: false, showCasesToPublic: true }
+          });
+        }
+
+        setFirebaseSuccess('Phone OTP verified! Logging in...');
+        setTimeout(() => navigate('/'), 1000);
+      } else {
+        setFirebaseError('No pending OTP request found. Please resend SMS.');
+      }
+    } catch (err) {
+      console.error('OTP confirmation error:', err);
+      setFirebaseError(err.message || 'Invalid OTP code. Please check SMS and try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 4. Real Firebase Password Reset Email
+  const handleForgotPassword = async (e) => {
+    e.preventDefault();
+    const emailInput = e.target.email.value;
+    if (!emailInput) return;
+    setLoading(true);
+    setFirebaseError('');
+    setFirebaseSuccess('');
+
+    try {
+      await sendPasswordResetEmail(auth, emailInput);
+      setFirebaseSuccess(`Password reset email sent to ${emailInput}! Check your inbox.`);
+    } catch (err) {
+      setFirebaseError(err.message || 'Failed to send password reset email.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 5. Trigger Resend Verification Email
+  const handleResendEmailVerification = async () => {
+    setLoading(true);
+    setFirebaseError('');
+    setFirebaseSuccess('');
+    try {
+      if (auth.currentUser) {
+        await sendEmailVerification(auth.currentUser);
+        setFirebaseSuccess('A new verification link has been sent to your email address!');
+      } else {
+        setFirebaseError('Please log in first to resend email verification.');
+      }
+    } catch (err) {
+      setFirebaseError(err.message || 'Could not send verification email.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 6. Google Sign In
   const handleGoogleSignIn = async () => {
     setLoading(true);
     setFirebaseError('');
@@ -68,7 +234,6 @@ export default function Auth({ isLogin = true, view = 'form' }) {
       const result = await signInWithPopup(auth, provider);
       const user = result.user;
 
-      // Create profile document if it doesn't exist
       const userDocRef = doc(db, 'users', user.uid);
       const userDoc = await getDoc(userDocRef);
 
@@ -84,10 +249,6 @@ export default function Auth({ isLogin = true, view = 'form' }) {
           role: 'doctor',
           photoUrl: user.photoURL || 'https://images.unsplash.com/photo-1622253692010-333f2da6031d?auto=format&fit=crop&q=80&w=200',
           bio: 'Dental Professional on DentConnect',
-          education: [],
-          experience: [],
-          certifications: [],
-          achievements: [],
           notificationSettings: { likes: true, comments: true, connections: true, chat: true, email: true, push: true },
           privacySettings: { profileVisibility: 'public', showEmail: false, showCasesToPublic: true }
         });
@@ -95,16 +256,13 @@ export default function Auth({ isLogin = true, view = 'form' }) {
       navigate('/');
     } catch (err) {
       console.error(err);
-      setFirebaseError('Google Sign-In failed. Redirecting to demo...');
-      setTimeout(() => {
-        handleDemoLogin();
-      }, 1500);
+      setFirebaseError('Google Sign-In failed: ' + err.message);
     } finally {
       setLoading(false);
     }
   };
 
-  // Demo Account Sign In
+  // 7. Demo Account Sign In
   const handleDemoLogin = async () => {
     setLoading(true);
     setFirebaseError('');
@@ -114,30 +272,21 @@ export default function Auth({ isLogin = true, view = 'form' }) {
       try {
         await login(demoEmail, demoPassword);
       } catch {
-        // Create demo account on the fly if missing
-        try {
-          const creds = await createUserWithEmailAndPassword(auth, demoEmail, demoPassword);
-          await setDoc(doc(db, 'users', creds.user.uid), {
-            uid: creds.user.uid,
-            name: 'Dr. Arun Kumar',
-            email: demoEmail,
-            phone: '+91 98765 43210',
-            specialization: 'Endodontics',
-            institution: 'Dental Care Research Center',
-            location: 'Bangalore, India',
-            role: 'doctor',
-            photoUrl: 'https://images.unsplash.com/photo-1622253692010-333f2da6031d?auto=format&fit=crop&q=80&w=200',
-            bio: 'Senior Endodontic Consultant specializing in rotary instrumentation and complex retreatments.',
-            education: [{ degree: 'MDS Endodontics', school: 'Government Dental College', year: '2015' }],
-            experience: [{ role: 'Senior Consultant', company: 'Smile Dental Clinic', duration: '5 Years' }],
-            certifications: ['Laser Dentistry Certified'],
-            achievements: ['Best Paper Award, IES 2021'],
-            notificationSettings: { likes: true, comments: true, connections: true, chat: true, email: true, push: true },
-            privacySettings: { profileVisibility: 'public', showEmail: true, showCasesToPublic: true }
-          });
-        } catch {
-          await login(demoEmail, demoPassword);
-        }
+        const creds = await createUserWithEmailAndPassword(auth, demoEmail, demoPassword);
+        await setDoc(doc(db, 'users', creds.user.uid), {
+          uid: creds.user.uid,
+          name: 'Dr. Arun Kumar',
+          email: demoEmail,
+          phone: '+91 98765 43210',
+          specialization: 'Endodontics',
+          institution: 'Dental Care Research Center',
+          location: 'Bangalore, India',
+          role: 'doctor',
+          photoUrl: 'https://images.unsplash.com/photo-1622253692010-333f2da6031d?auto=format&fit=crop&q=80&w=200',
+          bio: 'Senior Endodontic Consultant specializing in rotary instrumentation and complex retreatments.',
+          notificationSettings: { likes: true, comments: true, connections: true, chat: true, email: true, push: true },
+          privacySettings: { profileVisibility: 'public', showEmail: true, showCasesToPublic: true }
+        });
       }
       navigate('/');
     } catch (err) {
@@ -147,122 +296,26 @@ export default function Auth({ isLogin = true, view = 'form' }) {
     }
   };
 
-  // Forgot Password submit
-  const handleForgotPassword = async (e) => {
-    e.preventDefault();
-    const emailInput = e.target.email.value;
-    if (!emailInput) return;
-    setLoading(true);
-    setFirebaseError('');
-    try {
-      await resetPassword(emailInput);
-      setFirebaseError('Verification link sent! Check your inbox.');
-    } catch (err) {
-      setFirebaseError(err.message || 'Failed to send reset link.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Reset Password submit
-  const handleResetPassword = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setFirebaseError('');
-    try {
-      // Simulate successful password reset
-      setFirebaseError('Password successfully updated! Redirecting to login...');
-      setTimeout(() => navigate('/login'), 2000);
-    } catch (err) {
-      setFirebaseError(err.message || 'Failed to reset password.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // OTP code typing
-  const handleOtpChange = (index, val) => {
+  // OTP box digit change
+  const handleOtpDigitChange = (index, val) => {
     if (isNaN(val)) return;
     const updated = [...otpCode];
     updated[index] = val;
     setOtpCode(updated);
-    // Autofocus next
-    if (val !== '' && index < 3) {
-      document.getElementById(`otp-${index + 1}`).focus();
-    }
-  };
-
-  // OTP verify click
-  const handleVerifyOtp = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setFirebaseError('');
-    const code = otpCode.join('');
-    if (code.length < 4) {
-      setFirebaseError('Please enter the 4-digit code.');
-      setLoading(false);
-      return;
-    }
-
-    try {
-      // Complete Signup from registration data passed in history state
-      const regData = window.history.state?.usr?.regData;
-      if (regData) {
-        await signup(
-          regData.name,
-          regData.email,
-          regData.password,
-          regData.specialization,
-          regData.institution,
-          regData.location
-        );
-        // Navigate to Email Verification instructions
-        navigate('/verify-email');
-      } else {
-        // Fallback for direct mock signups
-        await signup(
-          "Dr. Clinician", 
-          `dentist-${Math.floor(Math.random()*1000)}@dentconnect.com`, 
-          "password123", 
-          "General Dentistry", 
-          "Dental Care Hospital", 
-          "New York, USA"
-        );
-        navigate('/verify-email');
-      }
-    } catch (err) {
-      console.error(err);
-      setFirebaseError(err.message || 'OTP verification failed.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Email verification verification check
-  const handleCheckEmailVerified = async () => {
-    setLoading(true);
-    try {
-      // In production, we'd reload user profile
-      const user = auth.currentUser;
-      if (user) {
-        // Trigger verification email request
-        await sendEmailVerification(user);
-      }
-      navigate('/');
-    } catch (e) {
-      console.error(e);
-      // bypass for sandbox simulation
-      navigate('/');
-    } finally {
-      setLoading(false);
+    if (val !== '' && index < 5) {
+      const nextInput = document.getElementById(`phone-otp-${index + 1}`);
+      if (nextInput) nextInput.focus();
     }
   };
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 px-4 py-8 animate-fade-in">
+      {/* Invisible Recaptcha Container for Firebase Phone Auth */}
+      <div id="recaptcha-container"></div>
+
       <div className="w-full max-w-md bg-white rounded-3xl border border-slate-100 p-6 md:p-8 shadow-xl shadow-slate-100/50">
         
-        {/* View Header */}
+        {/* Header */}
         <div className="text-center mb-6">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-primary text-white font-extrabold text-2xl shadow-md shadow-primary/20 mb-3">
             D
@@ -271,30 +324,58 @@ export default function Auth({ isLogin = true, view = 'form' }) {
             {view === 'forgot' && 'Reset Password 🔑'}
             {view === 'otp' && 'OTP Verification 📱'}
             {view === 'verify' && 'Verify Email 📧'}
-            {view === 'reset' && 'Create Password 🔒'}
             {view === 'form' && (isLogin ? 'Welcome Back! 👋' : 'Create Account 🦷')}
           </h2>
           <p className="text-slate-400 text-sm mt-1">
-            {view === 'forgot' && 'Enter your email to receive a recovery link'}
-            {view === 'otp' && 'Enter the 4-digit code sent to your mobile'}
-            {view === 'verify' && 'Complete validation to secure your profile'}
-            {view === 'reset' && 'Choose a strong password for your credentials'}
+            {view === 'forgot' && 'Receive a real reset link directly in your email inbox'}
+            {view === 'otp' && 'Enter the SMS code sent directly to your phone'}
+            {view === 'verify' && 'Check your inbox for real verification email link'}
             {view === 'form' && (isLogin ? 'Login to connect with dental professionals' : 'Join the professional dentist network')}
           </p>
         </div>
 
-        {/* Display alert banners */}
+        {/* Alerts */}
         {firebaseError && (
           <div className="mb-4 p-3 bg-red-50 border border-red-100 text-red-600 rounded-xl text-xs font-semibold leading-relaxed">
             {firebaseError}
           </div>
         )}
+        {firebaseSuccess && (
+          <div className="mb-4 p-3 bg-emerald-50 border border-emerald-100 text-emerald-700 rounded-xl text-xs font-semibold leading-relaxed flex items-center gap-2">
+            <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+            <span>{firebaseSuccess}</span>
+          </div>
+        )}
 
-        {/* 1. Login / Signup Forms */}
+        {/* Login / Signup Method Tabs (Email vs Phone) */}
         {view === 'form' && (
+          <div className="flex bg-slate-100 p-1 rounded-2xl mb-6">
+            <button
+              type="button"
+              onClick={() => setAuthMethod('email')}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 ${
+                authMethod === 'email' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Mail size={14} />
+              <span>Email & Password</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setAuthMethod('phone')}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 ${
+                authMethod === 'phone' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Phone size={14} />
+              <span>Phone SMS OTP</span>
+            </button>
+          </div>
+        )}
+
+        {/* 1A. Email Auth Form */}
+        {view === 'form' && authMethod === 'email' && (
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            
-            {/* Full Name (Signup only) */}
             {!isLogin && (
               <div className="space-y-1">
                 <label className="block text-xs font-bold text-slate-500 uppercase">Full Name *</label>
@@ -313,7 +394,6 @@ export default function Auth({ isLogin = true, view = 'form' }) {
               </div>
             )}
 
-            {/* Email Address */}
             <div className="space-y-1">
               <label className="block text-xs font-bold text-slate-500 uppercase">Email Address *</label>
               <div className="relative">
@@ -323,7 +403,7 @@ export default function Auth({ isLogin = true, view = 'form' }) {
                   placeholder="dr.arun@gmail.com"
                   {...register("email", { 
                     required: "Email is required", 
-                    pattern: { value: /^\S+@\S+$/i, message: "Invalid email structure" }
+                    pattern: { value: /^\S+@\S+$/i, message: "Invalid email format" }
                   })}
                   className={`pl-11 pr-4 py-3 bg-slate-50 border rounded-xl outline-none w-full text-sm transition-colors ${
                     errors.email ? 'border-red-400 focus:border-red-500 ring-2 ring-red-100' : 'border-slate-200 focus:border-primary focus:bg-white'
@@ -333,7 +413,6 @@ export default function Auth({ isLogin = true, view = 'form' }) {
               {errors.email && <p className="text-red-500 text-xs mt-0.5">{errors.email.message}</p>}
             </div>
 
-            {/* Password */}
             <div className="space-y-1">
               <div className="flex justify-between items-center">
                 <label className="block text-xs font-bold text-slate-500 uppercase">Password *</label>
@@ -367,7 +446,6 @@ export default function Auth({ isLogin = true, view = 'form' }) {
               {errors.password && <p className="text-red-500 text-xs mt-0.5">{errors.password.message}</p>}
             </div>
 
-            {/* Specialty Selection & Details (Signup only) */}
             {!isLogin && (
               <>
                 <div className="space-y-1">
@@ -386,12 +464,12 @@ export default function Auth({ isLogin = true, view = 'form' }) {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="block text-xs font-bold text-slate-500 uppercase">Institution / Practice Clinic</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase">Institution / Practice</label>
                   <div className="relative">
                     <Building size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input 
                       type="text"
-                      placeholder="Dental Care Research Center"
+                      placeholder="Dental Care Hospital"
                       {...register("institution")}
                       className="pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none w-full text-sm focus:border-primary focus:bg-white"
                     />
@@ -399,7 +477,7 @@ export default function Auth({ isLogin = true, view = 'form' }) {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="block text-xs font-bold text-slate-500 uppercase">Location / City</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase">Location</label>
                   <div className="relative">
                     <MapPin size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input 
@@ -416,22 +494,88 @@ export default function Auth({ isLogin = true, view = 'form' }) {
             <button 
               type="submit" 
               disabled={loading}
-              className="w-full py-3.5 bg-primary text-white font-semibold rounded-2xl hover:bg-primary-hover hover:-translate-y-0.5 active:translate-y-0 shadow-lg shadow-primary/20 hover:shadow-primary/30 transition-all duration-200 flex justify-center items-center gap-2"
+              className="w-full py-3.5 bg-primary text-white font-semibold rounded-2xl hover:bg-primary-hover shadow-lg shadow-primary/20 transition-all flex justify-center items-center gap-2"
             >
-              {loading ? (
-                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-              ) : (
-                isLogin ? 'Login Securely' : 'Proceed to Verify'
-              )}
+              {loading ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : (isLogin ? 'Login with Email' : 'Create Profile & Verify Email')}
             </button>
           </form>
         )}
 
-        {/* 2. Forgot Password Screen */}
+        {/* 1B. Phone Number Real Firebase SMS OTP Form */}
+        {view === 'form' && authMethod === 'phone' && (
+          <div className="space-y-4">
+            {!otpSent ? (
+              <form onSubmit={handleSendPhoneOtp} className="space-y-4">
+                <div className="space-y-1">
+                  <label className="block text-xs font-bold text-slate-500 uppercase">Mobile Phone Number *</label>
+                  <div className="relative">
+                    <Smartphone size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input 
+                      type="tel"
+                      value={phoneNumber}
+                      onChange={(e) => setPhoneNumber(e.target.value)}
+                      placeholder="+91 9876543210"
+                      required
+                      className="pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none w-full text-sm focus:border-primary focus:bg-white"
+                    />
+                  </div>
+                  <p className="text-slate-400 text-xs mt-1">Include country code (e.g. +91 for India, +1 for US)</p>
+                </div>
+
+                <button 
+                  type="submit" 
+                  disabled={loading}
+                  className="w-full py-3.5 bg-primary text-white font-semibold rounded-2xl hover:bg-primary-hover shadow-lg shadow-primary/20 transition-all flex justify-center items-center gap-2"
+                >
+                  {loading ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : 'Send Real Phone SMS OTP'}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleVerifyPhoneOtp} className="space-y-6 animate-fade-in">
+                <div className="text-center">
+                  <p className="text-xs text-slate-500">Enter the 6-digit SMS OTP code sent to <span className="font-bold text-slate-800">{phoneNumber}</span></p>
+                </div>
+
+                <div className="flex justify-center gap-2">
+                  {otpCode.map((digit, i) => (
+                    <input 
+                      key={i}
+                      id={`phone-otp-${i}`}
+                      type="text" 
+                      maxLength={1}
+                      value={digit}
+                      onChange={(e) => handleOtpDigitChange(i, e.target.value)}
+                      className="w-11 h-12 bg-slate-50 border border-slate-200 text-xl text-center font-extrabold text-slate-800 rounded-xl focus:border-primary focus:bg-white focus:ring-2 focus:ring-primary/15 transition-all outline-none"
+                    />
+                  ))}
+                </div>
+
+                <button 
+                  type="submit" 
+                  disabled={loading}
+                  className="w-full py-3.5 bg-emerald-600 text-white font-semibold rounded-2xl hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-all"
+                >
+                  {loading ? 'Verifying OTP...' : 'Verify Phone OTP & Login'}
+                </button>
+
+                <div className="flex justify-between items-center text-xs">
+                  <button type="button" onClick={() => setOtpSent(false)} className="text-slate-400 hover:text-slate-600">
+                    Change Phone Number
+                  </button>
+                  <button type="button" onClick={handleSendPhoneOtp} className="font-bold text-primary hover:underline">
+                    Resend SMS Code
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* 2. Forgot Password */}
         {view === 'forgot' && (
           <form onSubmit={handleForgotPassword} className="space-y-4">
             <div className="space-y-1">
-              <label className="block text-xs font-bold text-slate-500 uppercase">Registered Email</label>
+              <label className="block text-xs font-bold text-slate-500 uppercase">Registered Email Address</label>
               <div className="relative">
                 <Mail size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input 
@@ -447,9 +591,9 @@ export default function Auth({ isLogin = true, view = 'form' }) {
             <button 
               type="submit" 
               disabled={loading}
-              className="w-full py-3.5 bg-primary text-white font-semibold rounded-2xl hover:bg-primary-hover shadow-lg transition-all duration-200"
+              className="w-full py-3.5 bg-primary text-white font-semibold rounded-2xl hover:bg-primary-hover shadow-lg transition-all"
             >
-              {loading ? 'Processing...' : 'Send Recovery Link'}
+              {loading ? 'Sending Email...' : 'Send Password Reset Email'}
             </button>
 
             <Link to="/login" className="block text-center text-sm font-bold text-primary hover:underline mt-2">
@@ -458,74 +602,7 @@ export default function Auth({ isLogin = true, view = 'form' }) {
           </form>
         )}
 
-        {/* 3. OTP Verification Screen */}
-        {view === 'otp' && (
-          <form onSubmit={handleVerifyOtp} className="space-y-6">
-            <div className="flex justify-center gap-3">
-              {otpCode.map((digit, i) => (
-                <input 
-                  key={i}
-                  id={`otp-${i}`}
-                  type="text" 
-                  maxLength={1}
-                  value={digit}
-                  onChange={(e) => handleOtpChange(i, e.target.value)}
-                  className="w-14 h-14 bg-slate-50 border border-slate-200 text-2xl text-center font-extrabold text-slate-800 rounded-xl focus:border-primary focus:bg-white focus:ring-2 focus:ring-primary/15 transition-all outline-none"
-                />
-              ))}
-            </div>
-
-            <button 
-              type="submit" 
-              disabled={loading}
-              className="w-full py-3.5 bg-primary text-white font-semibold rounded-2xl hover:bg-primary-hover shadow-lg transition-all duration-200"
-            >
-              {loading ? 'Verifying...' : 'Verify OTP Code'}
-            </button>
-
-            <div className="text-center">
-              <span className="text-slate-400 text-xs">Didn't receive code? </span>
-              <button type="button" onClick={() => setFirebaseError('OTP code resent to mobile!')} className="text-xs font-bold text-primary hover:underline">
-                Resend
-              </button>
-            </div>
-          </form>
-        )}
-
-        {/* 4. Reset Password View */}
-        {view === 'reset' && (
-          <form onSubmit={handleResetPassword} className="space-y-4">
-            <div className="space-y-1">
-              <label className="block text-xs font-bold text-slate-500 uppercase">New Password</label>
-              <input 
-                type="password" 
-                placeholder="Enter new password" 
-                required 
-                className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none w-full text-sm focus:border-primary focus:bg-white transition-colors"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="block text-xs font-bold text-slate-500 uppercase">Confirm Password</label>
-              <input 
-                type="password" 
-                placeholder="Confirm new password" 
-                required 
-                className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none w-full text-sm focus:border-primary focus:bg-white transition-colors"
-              />
-            </div>
-
-            <button 
-              type="submit" 
-              disabled={loading}
-              className="w-full py-3.5 bg-primary text-white font-semibold rounded-2xl hover:bg-primary-hover shadow-lg transition-all duration-200"
-            >
-              Update Password
-            </button>
-          </form>
-        )}
-
-        {/* 5. Email Verification View */}
+        {/* 3. Email Verification */}
         {view === 'verify' && (
           <div className="space-y-6 text-center">
             <div className="flex justify-center">
@@ -533,20 +610,28 @@ export default function Auth({ isLogin = true, view = 'form' }) {
                 <ShieldCheck size={36} />
               </div>
             </div>
-            <p className="text-slate-600 text-sm leading-relaxed px-4">
-              We have sent a verification link to your registered email address. Please check your inbox and click the link to activate your profile.
+            <p className="text-slate-600 text-sm leading-relaxed px-2">
+              A real verification email link has been dispatched to your inbox. Click the link inside your email to complete verification.
             </p>
-            <button 
-              onClick={handleCheckEmailVerified} 
-              disabled={loading}
-              className="w-full py-3.5 bg-primary text-white font-semibold rounded-2xl hover:bg-primary-hover shadow-lg transition-all duration-200"
-            >
-              {loading ? 'Checking status...' : 'I have verified my email'}
-            </button>
+            <div className="space-y-3">
+              <button 
+                onClick={() => navigate('/')} 
+                className="w-full py-3.5 bg-primary text-white font-semibold rounded-2xl hover:bg-primary-hover shadow-lg transition-all"
+              >
+                Proceed to Dashboard
+              </button>
+              <button 
+                onClick={handleResendEmailVerification}
+                disabled={loading}
+                className="w-full py-3 text-xs font-bold text-primary hover:underline"
+              >
+                {loading ? 'Sending...' : 'Resend Verification Email'}
+              </button>
+            </div>
           </div>
         )}
 
-        {/* Google & Demo Account (Only show on Login/Signup form view) */}
+        {/* Social / Demo Login Buttons */}
         {view === 'form' && (
           <>
             <div className="relative my-6 text-center">
