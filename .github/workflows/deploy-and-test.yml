@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
@@ -18,6 +18,10 @@ concurrency:
 
 jobs:
   build-deploy-and-test:
+    name: Build, Deploy & Test Pipeline
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
 
     steps:
@@ -26,21 +30,21 @@ jobs:
         uses: actions/checkout@v4
 
       # Stage 2: Dependency Installation
-      - name: Stage 2 - Setup Node.js & Chrome
+      - name: Stage 2 - Setup Node.js Environment
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
           cache-dependency-path: dent_web/package-lock.json
 
-      - name: Install Google Chrome & ChromeDriver
+      - name: Install Google Chrome & Headless Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y wget curl unzip libxi6 libgconf-2-4 libnss3 chromium-browser
-          echo "Chrome Version:"
+          echo "Installed Chrome Version:"
           google-chrome --version || chromium-browser --version
 
-      - name: Install Dependencies
+      - name: Install Node Dependencies
         working-directory: dent_web
         run: npm ci
 
@@ -52,55 +56,66 @@ jobs:
       # Stage 4: Static Analysis
       - name: Stage 4 - Static Analysis & Linting
         working-directory: dent_web
-        run: npm run lint || echo "Linting completed with warnings"
+        run: npm run lint
 
-      # Stage 5: Deploy to GitHub Pages Branch & GitHub Pages API
-      - name: Stage 5 - Deploy to gh-pages Branch
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dent_web/dist
-
-      - name: Setup Pages
+      # Stage 5: Native GitHub Pages Deployment
+      - name: Stage 5 - Setup GitHub Pages
         uses: actions/configure-pages@v5
-        continue-on-error: true
 
-      - name: Upload Build Artifact for GitHub Pages
+      - name: Stage 5 - Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: 'dent_web/dist'
-        continue-on-error: true
 
-      - name: Deploy to GitHub Pages Native
+      - name: Stage 5 - Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-        continue-on-error: true
 
-      # Stage 6: Wait for Deployment
+      # Stage 6: Wait for Live Deployment Availability
       - name: Stage 6 - Wait for Live Deployment
         run: |
-          DEPLOY_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          DEPLOY_URL="${{ steps.deployment.outputs.page_url }}"
+          if [ -z "$DEPLOY_URL" ]; then
+            DEPLOY_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          fi
           echo "Configured Live BASE_URL: $DEPLOY_URL"
           echo "BASE_URL=$DEPLOY_URL" >> $GITHUB_ENV
           
-          echo "Waiting for live site $DEPLOY_URL to respond..."
-          for i in {1..20}; do
-            STATUS=$(curl -o /dev/null -s -w "%{http_code}" "$DEPLOY_URL" || true)
+          echo "Waiting for live site $DEPLOY_URL to respond with HTTP 200..."
+          SUCCESS=0
+          for i in {1..30}; do
+            STATUS=$(curl -o /dev/null -s -w "%{http_code}" "$DEPLOY_URL")
             echo "Attempt $i: HTTP Status $STATUS"
-            if [ "$STATUS" = "200" ] || [ "$STATUS" = "301" ] || [ "$STATUS" = "302" ]; then
-              echo "Deployment is LIVE and responding!"
+            if [ "$STATUS" = "200" ]; then
+              echo "Deployment is LIVE and responding with HTTP 200!"
+              SUCCESS=1
               break
             fi
-            sleep 3
+            sleep 5
           done
+          
+          if [ $SUCCESS -ne 1 ]; then
+            echo "ERROR: Live deployment timed out after 30 attempts."
+            exit 1
+          fi
 
       # Stage 7: Deployment Verification
       - name: Stage 7 - Deployment Verification
         run: |
           DEPLOY_URL="${{ env.BASE_URL }}"
           echo "Verifying Live Deployment at: $DEPLOY_URL"
-          HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" "$DEPLOY_URL" || true)
-          echo "Live Deployment HTTP Status: $HTTP_STATUS"
+          
+          HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" "$DEPLOY_URL")
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "ERROR: Deployment Health Check Failed! Received HTTP Status $HTTP_STATUS"
+            exit 1
+          fi
+          
+          HTML_CONTENT=$(curl -s "$DEPLOY_URL")
+          if [ -z "$HTML_CONTENT" ]; then
+            echo "ERROR: Empty response from live deployment URL."
+            exit 1
+          fi
           echo "Deployment Verification Passed Successfully."
 
       # Stage 8: Run Selenium E2E Tests against Live URL
@@ -111,18 +126,15 @@ jobs:
           SELENIUM_HEADLESS: "true"
         run: |
           echo "Executing Selenium E2E Test Suite against LIVE URL: $BASE_URL"
-          npm run test:e2e:live || echo "Test execution finished. Validating quality gate thresholds..."
+          npm run test:e2e:live
 
-      # Stage 9 & 10: Reports generated by runner in dent_web/Test Results/
-
-      # Stage 11: Upload Artifacts
+      # Stage 11: Upload Complete Test Artifacts
       - name: Stage 11 - Upload Complete Test Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: live-e2e-test-results
           path: |
-            dent_web/Test Results/
             dent_web/Test Results/Excel/*.xlsx
             dent_web/Test Results/HTML/*.html
             dent_web/Test Results/JSON/*.json
@@ -131,7 +143,7 @@ jobs:
             dent_web/Test Results/Summary/*.md
           retention-days: 30
 
-      # Stage 12: Publish Summary
+      # Stage 12: Publish GitHub Action Summary
       - name: Stage 12 - Publish GitHub Action Summary
         if: always()
         run: |
@@ -140,7 +152,7 @@ jobs:
           else
             echo "# Live GitHub Pages E2E Execution Summary" >> $GITHUB_STEP_SUMMARY
             echo "Deployment URL: ${{ env.BASE_URL }}" >> $GITHUB_STEP_SUMMARY
-            echo "Test summary report file created successfully." >> $GITHUB_STEP_SUMMARY
+            echo "Execution completed." >> $GITHUB_STEP_SUMMARY
           fi
 
       # Stage 13: Store Historical Results
