@@ -55,7 +55,26 @@ jobs:
         working-directory: dent_web
         run: npm run lint
 
-      # Stage 5: Deploy to GitHub Pages (Branch + Native GitHub Actions API)
+      # Stage 5: Automatically Enable & Deploy to GitHub Pages
+      - name: Auto-Enable GitHub Pages API
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              console.log("Enabling GitHub Pages site via REST API...");
+              await github.rest.repos.createPagesSite({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                source: {
+                  branch: 'gh-pages',
+                  path: '/'
+                }
+              });
+              console.log("GitHub Pages site successfully enabled!");
+            } catch (error) {
+              console.log("GitHub Pages status:", error.message || error);
+            }
+
       - name: Stage 5 - Deploy to gh-pages Branch
         uses: peaceiris/actions-gh-pages@v4
         with:
