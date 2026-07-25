@@ -33,7 +33,7 @@ jobs:
       - name: Stage 2 - Setup Node.js Environment
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
           cache-dependency-path: dent_web/package-lock.json
 
