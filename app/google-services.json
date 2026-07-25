@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "133660210570",
+    "project_id": "dentconnect-73638",
+    "storage_bucket": "dentconnect-73638.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:133660210570:android:8fe6929538a3b631ae4473",
+        "android_client_info": {
+          "package_name": "com.example.dentconnect"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "133660210570-m4t4r29so24karkavv497sb0cn9cf4nb.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBvbRc4lGl3frOZO6xlgX5VYBKXybsDqm4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "133660210570-m4t4r29so24karkavv497sb0cn9cf4nb.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

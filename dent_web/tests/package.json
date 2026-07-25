@@ -1,0 +1,25 @@
+{
+  "name": "dentconnect-selenium-tests",
+  "version": "1.0.0",
+  "description": "Selenium WebDriver tests for DentConnect Web App",
+  "type": "commonjs",
+  "scripts": {
+    "test": "mocha --timeout 30000 --reporter spec tests/**/*.test.js",
+    "test:report": "mocha --timeout 30000 --reporter mochawesome --reporter-options reportDir=report,reportFilename=index tests/**/*.test.js",
+    "test:welcome": "mocha --timeout 30000 tests/test_welcome.test.js",
+    "test:auth": "mocha --timeout 30000 tests/test_auth.test.js",
+    "test:dashboard": "mocha --timeout 30000 tests/test_dashboard.test.js",
+    "test:wizard": "mocha --timeout 30000 tests/test_wizard.test.js",
+    "test:network": "mocha --timeout 30000 tests/test_network.test.js",
+    "test:profile": "mocha --timeout 30000 tests/test_profile.test.js",
+    "test:drafts": "mocha --timeout 30000 tests/test_drafts.test.js",
+    "test:meta": "mocha --timeout 30000 tests/test_meta.test.js"
+  },
+  "dependencies": {
+    "selenium-webdriver": "^4.27.0",
+    "mocha": "^10.7.0",
+    "mochawesome": "^7.1.3",
+    "chai": "^4.4.1",
+    "chromedriver": "^131.0.1"
+  }
+}

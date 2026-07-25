@@ -1,0 +1,46 @@
+{
+  "name": "dent_web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "test:unit": "vitest run",
+    "test:security": "npm audit --omit=dev --audit-level=high",
+    "test:e2e": "cd tests && npm install && npm test",
+    "test:e2e:live": "node automation/runner.mjs",
+    "test:qa": "node scripts/runQaSuite.mjs",
+    "test:report": "node scripts/generateTestReport.mjs"
+  },
+  "dependencies": {
+    "firebase": "^12.15.0",
+    "lucide-react": "^1.21.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "react-hook-form": "^7.81.0",
+    "react-router-dom": "^7.18.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.5.2",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "exceljs": "^4.4.0",
+    "globals": "^17.6.0",
+    "jsdom": "^29.1.1",
+    "postcss": "^8.5.16",
+    "selenium-webdriver": "^4.46.0",
+    "tailwindcss": "^3.4.17",
+    "vite": "^8.0.12",
+    "vitest": "^4.1.10"
+  }
+}
