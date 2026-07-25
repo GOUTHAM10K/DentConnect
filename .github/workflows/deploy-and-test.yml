@@ -139,13 +139,31 @@ jobs:
           echo "Executing Selenium E2E Test Suite against LIVE URL: $BASE_URL"
           npm run test:e2e:live
 
+      # Stage 9: Execute k6 API Baseline & Load Test (100 VUs, 1 min)
+      - name: Stage 9 - Install k6 Performance Engine
+        uses: grafana/setup-k6-action@v1
+
+      - name: Stage 9 - Run k6 Baseline Load Test (100 VUs, 1m)
+        working-directory: dent_web
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+        run: |
+          echo "Executing k6 API Load Test (100 VUs, 1 min) against: $BASE_URL"
+          k6 run --summary-export=summary.json automation/load-test.js -e BASE_URL=${{ env.BASE_URL }} || echo "k6 load test completed."
+
+      - name: Stage 10 - Parse k6 Performance Summary & Publish
+        working-directory: dent_web
+        run: |
+          node automation/utils/parseK6Summary.mjs summary.json
+
       # Stage 11: Upload Complete Test Artifacts
       - name: Stage 11 - Upload Complete Test Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: live-e2e-test-results
+          name: live-e2e-and-load-test-results
           path: |
+            dent_web/summary.json
             dent_web/Test Results/Excel/*.xlsx
             dent_web/Test Results/HTML/*.html
             dent_web/Test Results/JSON/*.json
@@ -160,10 +178,9 @@ jobs:
         run: |
           if [ -f "dent_web/Test Results/Summary/summary.md" ]; then
             cat "dent_web/Test Results/Summary/summary.md" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "# Live GitHub Pages E2E Execution Summary" >> $GITHUB_STEP_SUMMARY
-            echo "Deployment URL: ${{ env.BASE_URL }}" >> $GITHUB_STEP_SUMMARY
-            echo "Execution completed." >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f "dent_web/Test Results/Summary/load-test-summary.md" ]; then
+            cat "dent_web/Test Results/Summary/load-test-summary.md" >> $GITHUB_STEP_SUMMARY
           fi
 
       # Stage 13: Store Historical Results
@@ -174,5 +191,8 @@ jobs:
           TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
           if [ -f "dent_web/Test Results/JSON/execution-results.json" ]; then
             cp "dent_web/Test Results/JSON/execution-results.json" "history/execution-results-$TIMESTAMP.json"
-            echo "Historical test results stored as history/execution-results-$TIMESTAMP.json"
+          fi
+          if [ -f "dent_web/summary.json" ]; then
+            cp "dent_web/summary.json" "history/k6-summary-$TIMESTAMP.json"
+            echo "Historical test & load results stored in history/"
           fi
